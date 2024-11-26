@@ -1,0 +1,33 @@
+[workspace]
+members = [".", "ebpf-common"]
+exclude = ["ebpf"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+description = "Memory allocation tracer"
+
+[workspace.dependencies]
+aya = { git = "https://github.com/aya-rs/aya.git", branch = "main" }
+aya-log = { git = "https://github.com/aya-rs/aya.git", branch = "main" }
+
+[dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+aya.workspace = true
+aya-log.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+object = { version = "0.36", default-features = false, features = ["elf", "read_core", "std", "write"] }
+rustc-demangle = "0.1"
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracelloc-ebpf-common = { path = "ebpf-common", features = ["user"] }
+
+[package]
+name = "tracelloc"
+version.workspace = true
+edition.workspace = true
+
+# [patch."https://github.com/aya-rs/aya.git"]
+# aya.path = "../aya/aya"

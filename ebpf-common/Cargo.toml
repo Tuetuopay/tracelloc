@@ -1,0 +1,11 @@
+[package]
+name = "tracelloc-ebpf-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aya = { workspace = true, optional = true }
+
+[features]
+default = []
+user = ["dep:aya"]
