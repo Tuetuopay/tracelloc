@@ -120,7 +120,7 @@ fn load_file_symbols(
         let Ok(sec) = obj.section_by_index(idx) else { continue };
 
         let Ok(name) = sym.name() else { continue };
-        let name = format!("{:#}", rustc_demangle::demangle(name));
+        let name = rustc_demangle::demangle(name).to_string();
 
         let sec_off = sec.elf_section_header().sh_offset(endian) as usize;
         let Some(&(map_base, map_off)) = map_rev.get(sec_off) else { continue };
