@@ -49,8 +49,12 @@ pub struct Sym<'a> {
 
 impl<'a> fmt::Display for Sym<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::{COLOR_MGT, COLOR_RST, COLOR_YLW};
         let Sym { file, name, offset, size } = self;
-        write!(f, "{name}+0x{offset:x}/0x{size:x} in {file}")
+        write!(
+            f,
+            "{COLOR_YLW}{name}{COLOR_RST}+0x{offset:x}/0x{size:x} in {COLOR_MGT}{file}{COLOR_RST}"
+        )
     }
 }
 

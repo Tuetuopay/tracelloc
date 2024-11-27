@@ -492,6 +492,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "size"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fed904c7fb2856d868b92464fc8fa597fce366edea1a9cbfaa8cb5fe080bd6d"
+
+[[package]]
 name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -591,6 +597,7 @@ dependencies = [
  "clap",
  "object",
  "rustc-demangle",
+ "size",
  "tokio",
  "tracelloc-ebpf-common",
  "tracing",

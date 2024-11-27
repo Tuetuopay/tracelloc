@@ -12,6 +12,7 @@ use aya::{
 use aya_log::EbpfLogger;
 use clap::Parser;
 use elf::SymResolver;
+use size::Size;
 use tokio::{select, signal::ctrl_c, time::interval};
 use tracelloc_ebpf_common::AllocationValue;
 use tracing::{error, info};
@@ -28,6 +29,11 @@ macro_rules! ebpf_elf {
 }
 
 ebpf_elf!(TRACELLOC("tracelloc"));
+
+pub const COLOR_RST: &str = "\x1b[39m";
+pub const COLOR_BLU: &str = "\x1b[34m";
+pub const COLOR_YLW: &str = "\x1b[33m";
+pub const COLOR_MGT: &str = "\x1b[35m";
 
 /// `tracelloc` is a tool to track allocations in Rust programs.
 #[derive(Parser)]
@@ -83,10 +89,11 @@ async fn main() -> Result<()> {
         };
         allocs.sort_by_key(|(_ptr, v)| v.size);
         allocs.reverse();
-        let total = allocs.iter().map(|(_, v)| v.size).sum::<usize>();
-        println!("==> {top} top allocations out of {} for a total of {total} bytes:", allocs.len());
+        let total = Size::from_bytes(allocs.iter().map(|(_, v)| v.size).sum::<usize>());
+        println!("==> {top} top allocations out of {} for a total of {total}", allocs.len());
         for (ptr, AllocationValue { size, .. }) in allocs.iter().take(top).copied() {
-            println!("    0x{ptr:016x}: {size} bytes");
+            let size = Size::from_bytes(size);
+            println!("    0x{ptr:016x}: {size}");
         }
 
         let mut allocs = match allocators.iter().collect::<Result<Vec<_>, _>>() {
@@ -100,14 +107,17 @@ async fn main() -> Result<()> {
         allocs.reverse();
         println!("==> {top} top allocators out of {}:", allocs.len());
         for (stackid, size) in allocs.iter().take(top) {
-            println!("    {stackid:>8}: {size} bytes");
+            let size = Size::from_bytes(*size);
+            println!("  {stackid:>8}: {size}");
 
             let stackid = *stackid as u32;
             let Ok(stack) = stacks.get(&stackid, 0) else { continue };
             for frame in stack.frames() {
                 match symbols.resolve(frame.ip as usize) {
-                    Some(sym) => println!("                0x{:016x}: {sym}", frame.ip),
-                    None => println!("                0x{:016x}: ???", frame.ip),
+                    Some(sym) => {
+                        println!("            {COLOR_BLU}0x{:016x}{COLOR_RST}: {sym}", frame.ip)
+                    }
+                    None => println!("            {COLOR_BLU}0x{:016x}{COLOR_RST}: ???", frame.ip),
                 }
             }
         }
