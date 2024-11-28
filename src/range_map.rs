@@ -64,3 +64,15 @@ impl<V, R: RangeBounds<usize>> FromIterator<(R, V)> for RangeMap<V> {
         ret
     }
 }
+
+impl<V> IntoIterator for RangeMap<V> {
+    type Item = (Range<usize>, V);
+    type IntoIter = std::iter::Map<
+        <BTreeMap<usize, Val<V>> as IntoIterator>::IntoIter,
+        fn(<BTreeMap<usize, Val<V>> as IntoIterator>::Item) -> Self::Item,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter().map(|(start, v)| (start..(start + v.len), v.value))
+    }
+}

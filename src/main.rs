@@ -184,9 +184,10 @@ fn print_stats(
     allocs.sort_by_key(|(_ptr, alloc)| alloc.size);
     let total = Size::from_bytes(allocs.iter().map(|(_ptr, alloc)| alloc.size).sum::<usize>());
     println!("==> {top} top allocations out of {} for a total of {total}", allocs.len());
-    for &(&ptr, &Allocation { size, .. }) in allocs.iter().rev().take(top) {
-        let size = Size::from_bytes(size);
-        println!("    0x{ptr:016x?}: {size}");
+    for &(&ptr, Allocation { size, stack }) in allocs.iter().rev().take(top) {
+        let size = Size::from_bytes(*size);
+        println!("    {COLOR_BLU}0x{ptr:016x?}{COLOR_RST}: {size}");
+        symbols.print_stacktrace(stack);
     }
 
     let mut allocs = allocators.iter().collect::<Vec<_>>();
@@ -199,14 +200,7 @@ fn print_stats(
 
         let size = Size::from_bytes(size);
         println!("  {i:>4}: {size}");
-
-        for ip in stack {
-            print!("        {COLOR_BLU}0x{ip:016x}{COLOR_RST}: ");
-            match symbols.resolve(*ip as usize) {
-                Some(sym) => println!("{sym}"),
-                None => println!("???"),
-            }
-        }
+        symbols.print_stacktrace(stack);
     }
 
     println!("");

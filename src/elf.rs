@@ -8,7 +8,7 @@ use object::{
     Object, ObjectSection, ObjectSymbol,
 };
 
-use crate::range_map::RangeMap;
+use crate::{range_map::RangeMap, COLOR_BLU, COLOR_MGT, COLOR_RST, COLOR_YLW};
 
 #[derive(Debug)]
 struct Symbol {
@@ -21,22 +21,52 @@ struct Symbol {
 #[derive(Debug)]
 pub struct SymResolver {
     symbols: RangeMap<Symbol>,
+    maps: RangeMap<Rc<String>>,
 }
 
 impl SymResolver {
     pub fn new(pid: i32) -> Result<Self> {
         let maps = load_maps(pid).context("load process maps")?;
         let mut symbols = RangeMap::new();
-        for (file, maps) in maps {
-            load_file_symbols(&mut symbols, &maps, &file).with_context(|| file.to_owned())?;
+        for (file, maps) in &maps {
+            load_file_symbols(&mut symbols, &maps, file).with_context(|| file.to_owned())?;
         }
 
-        Ok(Self { symbols })
+        let maps = maps
+            .into_iter()
+            .flat_map(|(file, map)| {
+                let file = Rc::new(file);
+                map.into_iter().map(move |(r, _v)| (r, file.clone()))
+            })
+            .collect();
+
+        Ok(Self { symbols, maps })
     }
 
     pub fn resolve(&self, addr: usize) -> Option<Sym> {
         let sym = self.symbols.get(addr)?;
         Some(Sym { file: &sym.file, name: &sym.name, offset: addr - sym.addr, size: sym.size })
+    }
+
+    pub fn resolve_file(&self, addr: usize) -> Option<&str> {
+        let file = self.maps.get(addr)?;
+        Some(&file)
+    }
+
+    pub fn print_stacktrace(&self, stack: &[u64]) {
+        for ip in stack {
+            print!("        {COLOR_BLU}0x{ip:016x}{COLOR_RST}: ");
+            match self.resolve(*ip as usize) {
+                Some(sym) => println!("{sym}"),
+                None => {
+                    print!("???");
+                    match self.resolve_file(*ip as usize) {
+                        Some(file) => println!(" in {COLOR_MGT}{file}{COLOR_RST}"),
+                        None => println!(""),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -49,7 +79,6 @@ pub struct Sym<'a> {
 
 impl<'a> fmt::Display for Sym<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use crate::{COLOR_MGT, COLOR_RST, COLOR_YLW};
         let Sym { file, name, offset, size } = self;
         write!(
             f,
@@ -58,7 +87,7 @@ impl<'a> fmt::Display for Sym<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct Mapping {
     start: usize,
     end: usize,
