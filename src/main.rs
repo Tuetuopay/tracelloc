@@ -1,11 +1,15 @@
 //! Tracelloc is a tool to track allocations in a Rust program.
 
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    os::{fd::AsRawFd, raw::c_void},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{HashMap, MapData, StackTraceMap},
+    maps::{Map, MapData, MapError, RingBuf, StackTraceMap},
     programs::UProbe,
     Ebpf, EbpfLoader,
 };
@@ -13,9 +17,14 @@ use aya_log::EbpfLogger;
 use clap::Parser;
 use elf::SymResolver;
 use size::Size;
-use tokio::{select, signal::ctrl_c, time::interval};
-use tracelloc_ebpf_common::AllocationValue;
-use tracing::{error, info};
+use tokio::{
+    io::unix::{AsyncFd, AsyncFdReadyGuard},
+    select,
+    signal::ctrl_c,
+    time::interval,
+};
+use tracelloc_ebpf_common::{Event, EventKind, Memcall};
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 mod elf;
@@ -64,65 +73,25 @@ async fn main() -> Result<()> {
     instrument(&mut ebpf, pid, "libc", "free")?;
     instrument(&mut ebpf, pid, "libc", "realloc")?;
 
-    let allocs = ebpf.take_map("ALLOCATIONS").context("ALLOCATIONS")?;
-    let allocs =
-        HashMap::<MapData, u64, AllocationValue>::try_from(allocs).context("ALLOCATIONS")?;
-    let allocators = ebpf.take_map("ALLOCATORS").context("ALLOCATORS")?;
-    let allocators = HashMap::<MapData, i64, u64>::try_from(allocators).context("ALLOCATORS")?;
-    let stacks = ebpf.take_map("STACKS").context("STACKS")?;
-    let stacks = StackTraceMap::try_from(stacks).context("STACKS")?;
+    let mut stacks = take_map::<StackTraceMap<MapData>>(&mut ebpf, "STACKS")?;
+    let mut events = take_map::<RingBuf<MapData>>(&mut ebpf, "EVENTS")?;
+    let events_fd = AsyncFd::new(events.as_raw_fd()).context("fd")?;
+
+    let mut allocs = HashMap::new();
+    let mut allocators = HashMap::new();
 
     info!("Waiting for ^C");
-    let mut tick = interval(Duration::from_secs(1));
+    let mut tick_print = interval(Duration::from_secs(1));
+    let mut tick_gc = interval(Duration::from_secs(10));
     loop {
         select! {
             _ = ctrl_c() => break,
-            _ = tick.tick() => (),
-        }
-
-        let mut allocs = match allocs.iter().collect::<Result<Vec<_>, _>>() {
-            Ok(allocs) => allocs,
-            Err(e) => {
-                error!("Failed to list allocations: {e}");
-                continue;
+            _ = tick_print.tick() => print_stats(&symbols, &allocs, &allocators, top)?,
+            _ = tick_gc.tick() => gc_allocators(&mut allocators),
+            guard = events_fd.readable() => {
+                handle_event(&mut events, &mut stacks, &mut allocs, &mut allocators, guard?).await?;
             }
         };
-        allocs.sort_by_key(|(_ptr, v)| v.size);
-        allocs.reverse();
-        let total = Size::from_bytes(allocs.iter().map(|(_, v)| v.size).sum::<usize>());
-        println!("==> {top} top allocations out of {} for a total of {total}", allocs.len());
-        for (ptr, AllocationValue { size, .. }) in allocs.iter().take(top).copied() {
-            let size = Size::from_bytes(size);
-            println!("    0x{ptr:016x}: {size}");
-        }
-
-        let mut allocs = match allocators.iter().collect::<Result<Vec<_>, _>>() {
-            Ok(allocs) => allocs,
-            Err(e) => {
-                error!("Failed to list allocators: {e}");
-                continue;
-            }
-        };
-        allocs.sort_by_key(|(_stack, size)| *size);
-        allocs.reverse();
-        println!("==> {top} top allocators out of {}:", allocs.len());
-        for (stackid, size) in allocs.iter().take(top) {
-            let size = Size::from_bytes(*size);
-            println!("  {stackid:>8}: {size}");
-
-            let stackid = *stackid as u32;
-            let Ok(stack) = stacks.get(&stackid, 0) else { continue };
-            for frame in stack.frames() {
-                match symbols.resolve(frame.ip as usize) {
-                    Some(sym) => {
-                        println!("            {COLOR_BLU}0x{:016x}{COLOR_RST}: {sym}", frame.ip)
-                    }
-                    None => println!("            {COLOR_BLU}0x{:016x}{COLOR_RST}: ???", frame.ip),
-                }
-            }
-        }
-
-        println!("");
     }
     info!("Cleaning up...");
 
@@ -139,6 +108,12 @@ fn get_uprobe<'ebpf>(ebpf: &'ebpf mut Ebpf, name: &str) -> Result<&'ebpf mut UPr
     Ok(probe)
 }
 
+fn take_map<M: TryFrom<Map, Error = MapError>>(ebpf: &mut Ebpf, name: &str) -> Result<M> {
+    let map = ebpf.take_map(name).with_context(|| format!("Map {name} not found"))?;
+    let map = M::try_from(map).with_context(|| format!("Invalid map type for {name}"))?;
+    Ok(map)
+}
+
 fn instrument(ebpf: &mut Ebpf, pid: i32, target: &'static str, name: &'static str) -> Result<()> {
     let name_ret = format!("{name}_ret");
     let prog_ret = get_uprobe(ebpf, &name_ret).with_context(|| name_ret.clone())?;
@@ -146,4 +121,98 @@ fn instrument(ebpf: &mut Ebpf, pid: i32, target: &'static str, name: &'static st
     let prog = get_uprobe(ebpf, name).context(name)?;
     prog.attach(Some(name), 0, target, Some(pid))?;
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct Allocation {
+    /// Size of the allocation.
+    size: usize,
+    /// Stack trace that allocated the memory.
+    stack: Vec<u64>,
+}
+
+async fn handle_event(
+    events: &mut RingBuf<MapData>,
+    stacks: &mut StackTraceMap<MapData>,
+    allocations: &mut HashMap<*const c_void, Allocation>,
+    allocators: &mut HashMap<Vec<u64>, usize>,
+    mut guard: AsyncFdReadyGuard<'_, i32>,
+) -> Result<()> {
+    let Some(item) = events.next() else {
+        guard.clear_ready();
+        return Ok(());
+    };
+    let event = unsafe { &*item.as_ptr().cast::<Event>() };
+    let addr = event.addr;
+    let size = event.size;
+
+    if matches!(event.kind, EventKind::Alloc) {
+        let stackid = event.stackid;
+        let Ok(stack) = stacks.get(&stackid, 0) else {
+            debug!("Dropped {event:016x?}: stack not found");
+            return Ok(());
+        };
+        let stack = stack.frames().iter().map(|frame| frame.ip).collect::<Vec<_>>();
+        let alloc = Allocation { size, stack };
+        if let Some(old_alloc) = allocations.insert(addr, alloc.clone()) {
+            // Let's assume we missed a free somewhere.
+            debug!("Found old {old_alloc:016x?} for addr {addr:016x?}");
+            let total_size = allocators.entry(old_alloc.stack).or_default();
+            *total_size = total_size.saturating_sub(old_alloc.size);
+        }
+        let total_size = allocators.entry(alloc.stack).or_default();
+        *total_size = total_size.saturating_add(size);
+    } else {
+        let Some(alloc) = allocations.remove(&addr) else {
+            debug!("Dropped {event:016x?}: allocation not found");
+            return Ok(());
+        };
+        let total_size = allocators.entry(alloc.stack).or_default();
+        *total_size = total_size.saturating_sub(size);
+    }
+
+    Ok(())
+}
+
+fn print_stats(
+    symbols: &SymResolver,
+    allocations: &HashMap<*const c_void, Allocation>,
+    allocators: &HashMap<Vec<u64>, usize>,
+    top: usize,
+) -> Result<()> {
+    let mut allocs = allocations.iter().collect::<Vec<_>>();
+    allocs.sort_by_key(|(_ptr, alloc)| alloc.size);
+    let total = Size::from_bytes(allocs.iter().map(|(_ptr, alloc)| alloc.size).sum::<usize>());
+    println!("==> {top} top allocations out of {} for a total of {total}", allocs.len());
+    for &(&ptr, &Allocation { size, .. }) in allocs.iter().rev().take(top) {
+        let size = Size::from_bytes(size);
+        println!("    0x{ptr:016x?}: {size}");
+    }
+
+    let mut allocs = allocators.iter().collect::<Vec<_>>();
+    allocs.sort_by_key(|(_stack, size)| *size);
+    println!("==> {top} top allocators out of {}:", allocs.len());
+    for (i, &(stack, &size)) in allocs.iter().rev().take(top).enumerate() {
+        if size == 0 {
+            continue;
+        }
+
+        let size = Size::from_bytes(size);
+        println!("  {i:>4}: {size}");
+
+        for ip in stack {
+            print!("        {COLOR_BLU}0x{ip:016x}{COLOR_RST}: ");
+            match symbols.resolve(*ip as usize) {
+                Some(sym) => println!("{sym}"),
+                None => println!("???"),
+            }
+        }
+    }
+
+    println!("");
+    Ok(())
+}
+
+fn gc_allocators(allocators: &mut HashMap<Vec<u64>, usize>) {
+    allocators.retain(|_stack, size| *size > 0);
 }
