@@ -64,7 +64,7 @@ impl SymResolver {
         Some(&file)
     }
 
-    fn is_filtered_out(&self, symbol: &Sym) -> bool {
+    pub fn is_filtered_out(&self, symbol: &Sym) -> bool {
         self.filter.iter().any(|filter| symbol.name.starts_with(filter))
     }
 
@@ -102,6 +102,12 @@ pub struct Sym<'a> {
     name: &'a str,
     offset: usize,
     size: usize,
+}
+
+impl<'a> Sym<'a> {
+    pub fn name(&self) -> &'a str {
+        &self.name
+    }
 }
 
 impl<'a> fmt::Display for Sym<'a> {

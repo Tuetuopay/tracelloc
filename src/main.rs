@@ -2,6 +2,8 @@
 
 use std::{
     collections::HashMap,
+    fs::File,
+    io::{BufWriter, Write},
     os::{fd::AsRawFd, raw::c_void},
     time::Duration,
 };
@@ -53,11 +55,14 @@ struct Tracelloc {
     /// Top N things to show.
     #[clap(long, default_value = "15")]
     top: usize,
+    /// Output the collected data as a flamegraph-compatible file on exit.
+    #[clap(long)]
+    flamegraph: Option<String>,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let Tracelloc { pid, top } = Tracelloc::parse();
+    let Tracelloc { pid, top, flamegraph } = Tracelloc::parse();
 
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
@@ -104,6 +109,12 @@ async fn main() -> Result<()> {
             }
         };
     }
+
+    if let Some(flamegraph) = flamegraph {
+        info!("Outputting flamegraph data to {flamegraph}");
+        output_flamegraph(&symbols, &allocators, &flamegraph)?;
+    }
+
     info!("Cleaning up...");
 
     Ok(())
@@ -220,4 +231,46 @@ fn print_stats(
 
 fn gc_allocators(allocators: &mut HashMap<Vec<u64>, usize>) {
     allocators.retain(|_stack, size| *size > 0);
+}
+
+fn output_flamegraph(
+    symbols: &SymResolver,
+    allocators: &HashMap<Vec<u64>, usize>,
+    file: &str,
+) -> Result<()> {
+    let mut allocs = allocators
+        .iter()
+        .filter(|(_stack, &size)| size > 0)
+        .map(|(stack, size)| {
+            // Take the first frame that's not from libc and set it as the root.
+            let root = stack
+                .iter()
+                .rev()
+                .find_map(|ip| match symbols.resolve_file(*ip as usize) {
+                    Some(path) if !path.contains("libc.so") => Some(path),
+                    _ => None,
+                })
+                .unwrap_or("[unknown]");
+            let syms = stack
+                .iter()
+                .rev()
+                .filter_map(|ip| match symbols.resolve(*ip as usize) {
+                    Some(sym) if symbols.is_filtered_out(&sym) => None,
+                    Some(sym) => Some(sym.name()),
+                    None => Some("[unknown]"),
+                })
+                .collect::<Vec<_>>();
+            let pretty_size = Size::from_bytes(*size);
+            format!("{root};{} ({pretty_size}) {size}", syms.join(";"))
+        })
+        .collect::<Vec<_>>();
+    allocs.sort();
+
+    let mut f = BufWriter::new(File::create(file)?);
+    for alloc in allocs {
+        writeln!(f, "{alloc}")?;
+    }
+    f.flush()?;
+
+    Ok(())
 }
