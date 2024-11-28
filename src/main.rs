@@ -22,7 +22,7 @@ use size::Size;
 use tokio::{
     io::unix::{AsyncFd, AsyncFdReadyGuard},
     select,
-    signal::ctrl_c,
+    signal::{ctrl_c, unix::SignalKind},
     time::interval,
 };
 use tracelloc_ebpf_common::{Event, EventKind, Memcall};
@@ -102,6 +102,8 @@ async fn main() -> Result<()> {
     let mut allocs = HashMap::new();
     let mut allocators = HashMap::new();
 
+    let mut sigusr1 = tokio::signal::unix::signal(SignalKind::user_defined1())?;
+
     info!("Waiting for ^C");
     let mut tick_print = interval(Duration::from_secs(1));
     let mut tick_gc = interval(Duration::from_secs(10));
@@ -112,6 +114,10 @@ async fn main() -> Result<()> {
             _ = tick_gc.tick() => gc_allocators(&mut allocators),
             guard = events_fd.readable() => {
                 handle_event(&mut events, &mut stacks, &mut allocs, &mut allocators, guard?).await?;
+            }
+            _ = sigusr1.recv(), if flamegraph.is_some() => {
+                output_flamegraph(&symbols, &allocators, flamegraph.as_deref().unwrap())?;
+                info!("Dumped flamegraph data to {}", flamegraph.as_deref().unwrap());
             }
         };
     }
