@@ -61,8 +61,19 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
+    let symbol_filter = &[
+        "<tokio::runtime::blocking::task::BlockingTask<T> as core::future::future::Future>::poll",
+        "__rust_try",
+        "std::panic::catch_unwind",
+        "std::panicking",
+        "std::sys::backtrace",
+        "std::thread::local::LocalKey<T>",
+        "tokio::runtime",
+    ];
+    let symbol_filter = symbol_filter.iter().map(|&s| s.to_owned()).collect();
+
     info!("Loading symbols");
-    let symbols = SymResolver::new(pid)?;
+    let symbols = SymResolver::new(pid)?.with_symbol_filter(symbol_filter);
 
     info!("Loading eBPF");
     let mut ebpf = EbpfLoader::new().load(&TRACELLOC).context("Failed to load eBPF program")?;

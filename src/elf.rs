@@ -1,6 +1,10 @@
 //! Utilities for loading and parsing ELF files.
 
-use std::{collections::HashMap, fmt, fs, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt, fs,
+    rc::Rc,
+};
 
 use anyhow::{Context, Result};
 use object::{
@@ -22,6 +26,8 @@ struct Symbol {
 pub struct SymResolver {
     symbols: RangeMap<Symbol>,
     maps: RangeMap<Rc<String>>,
+    /// Symbol blacklist because Rust stack traces tend to be very verbose (tokio:runtime etc).
+    filter: HashSet<String>,
 }
 
 impl SymResolver {
@@ -40,7 +46,11 @@ impl SymResolver {
             })
             .collect();
 
-        Ok(Self { symbols, maps })
+        Ok(Self { symbols, maps, filter: HashSet::new() })
+    }
+
+    pub fn with_symbol_filter(self, blacklist: HashSet<String>) -> Self {
+        Self { filter: blacklist, ..self }
     }
 
     pub fn resolve(&self, addr: usize) -> Option<Sym> {
@@ -53,12 +63,28 @@ impl SymResolver {
         Some(&file)
     }
 
+    fn is_filtered_out(&self, symbol: &Sym) -> bool {
+        self.filter.iter().any(|filter| symbol.name.starts_with(filter))
+    }
+
     pub fn print_stacktrace(&self, stack: &[u64]) {
-        for ip in stack {
+        fn p_ip(ip: u64) {
             print!("        {COLOR_BLU}0x{ip:016x}{COLOR_RST}: ");
+        }
+
+        let mut filtered = 0usize;
+        for ip in stack {
             match self.resolve(*ip as usize) {
-                Some(sym) => println!("{sym}"),
+                Some(sym) if self.is_filtered_out(&sym) => filtered += 1,
+                Some(sym) => {
+                    if filtered > 0 {
+                        println!("         ({filtered} filtered out)");
+                    }
+                    p_ip(*ip);
+                    println!("{sym}");
+                }
                 None => {
+                    p_ip(*ip);
                     print!("???");
                     match self.resolve_file(*ip as usize) {
                         Some(file) => println!(" in {COLOR_MGT}{file}{COLOR_RST}"),
