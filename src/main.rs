@@ -67,13 +67,19 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
     let symbol_filter = &[
-        "<tokio::runtime::blocking::task::BlockingTask<T> as core::future::future::Future>::poll",
-        "__rust_try",
-        "std::panic::catch_unwind",
-        "std::panicking",
-        "std::sys::backtrace",
-        "std::thread::local::LocalKey<T>",
-        "tokio::runtime",
+        " as core::future::future::Future>::poll",
+        " as core:ops::function::Fn<Args>>::call",
+        " as core:ops::function::FnMut<Args>>::call_mut",
+        " as core:ops::function::FnOnce<Args>>::call_once",
+        " as futures_core::future::TryFuture>::try_poll",
+        "^core::ops::function::FnOnce::call_once{{vtable.shim}}",
+        "^hyper::proto::h2::server::H2Stream<F,B>::poll2",
+        "^__rust_try",
+        "^std::panic::catch_unwind",
+        "^std::panicking",
+        "^std::sys::backtrace",
+        "^std::thread::local::LocalKey<T>",
+        "^tokio::runtime",
     ];
     let symbol_filter = symbol_filter.iter().map(|&s| s.to_owned()).collect();
 

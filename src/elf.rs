@@ -65,7 +65,13 @@ impl SymResolver {
     }
 
     pub fn is_filtered_out(&self, symbol: &Sym) -> bool {
-        self.filter.iter().any(|filter| symbol.name.starts_with(filter))
+        self.filter.iter().any(|filter| {
+            if filter.starts_with('^') {
+                symbol.name.starts_with(&filter[1..])
+            } else {
+                symbol.name.contains(filter)
+            }
+        })
     }
 
     pub fn print_stacktrace(&self, stack: &[u64]) {
