@@ -11,6 +11,7 @@ use object::{
     read::elf::{ElfFile64, SectionHeader},
     Object, ObjectSection, ObjectSymbol,
 };
+use tracing::debug;
 
 use crate::{range_map::RangeMap, COLOR_BLU, COLOR_MGT, COLOR_RST, COLOR_YLW};
 
@@ -134,6 +135,8 @@ fn load_maps(pid: i32) -> Result<HashMap<String, RangeMap<Mapping>>> {
             [_addrs, _perms, _offset, _dev, _inode, name] if name.starts_with("[") => continue,
             // The backing file has been deleted :/
             [_addrs, _perms, _offset, _dev, _inode, "(deleted)"] => continue,
+            // Non-executable mapping
+            [_addrs, perms, _offset, _dev, _inode, _name] if !perms.contains('x') => continue,
             // What we actually want o/
             &[addrs, _perms, offset, _dev, _inode, file] => [addrs, offset, file],
             // Anything else, though not supposed to happen.
@@ -157,6 +160,7 @@ fn load_file_symbols(
     maps: &RangeMap<Mapping>,
     file: &str,
 ) -> Result<()> {
+    debug!("Loading symbols from {file}");
     let data = fs::read(file)?;
     let obj: ElfFile64 = ElfFile64::parse(&*data)?;
     let endian = obj.endian();
