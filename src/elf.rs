@@ -186,7 +186,7 @@ fn load_file_symbols(
         .collect::<RangeMap<_>>();
 
     let file = Rc::new(file.to_owned());
-    for sym in obj.symbols() {
+    for sym in obj.symbols().chain(obj.dynamic_symbols()) {
         let Some(idx) = sym.section_index() else { continue };
         let Ok(sec) = obj.section_by_index(idx) else { continue };
 
