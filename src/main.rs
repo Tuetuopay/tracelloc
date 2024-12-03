@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
     instrument(&mut ebpf, pid, "libc", "calloc")?;
     instrument(&mut ebpf, pid, "libc", "free")?;
     instrument(&mut ebpf, pid, "libc", "realloc")?;
+    instrument(&mut ebpf, pid, "libc", "reallocarray")?;
 
     let mut stacks = take_map::<StackTraceMap<MapData>>(&mut ebpf, "STACKS")?;
     let mut events = take_map::<RingBuf<MapData>>(&mut ebpf, "EVENTS")?;

@@ -30,6 +30,7 @@ tracking_map!(MALLOCS, usize);
 tracking_map!(CALLOCS, (usize, usize));
 tracking_map!(FREES, *const c_void);
 tracking_map!(REALLOCS, (*const c_void, usize));
+tracking_map!(REALLOCARRAYS, (*const c_void, usize));
 
 #[map]
 static mut ALLOCATIONS: HashMap<*const c_void, AllocationValue> =
@@ -111,6 +112,30 @@ fn realloc_ret(ctx: RetProbeContext) {
         // which it is, since it basically calls free. and since we hook free, we'll know.
         // on_free(&ctx, old_ptr);
     } else {
+        on_free(&ctx, old_ptr);
+        on_alloc(&ctx, new_ptr, new_size);
+    }
+}
+
+#[uprobe]
+fn reallocarray(ctx: ProbeContext) {
+    let Some(ptr) = ctx.arg::<*const c_void>(0) else { return };
+    let Some(nmemb) = ctx.arg::<usize>(1) else { return };
+    let Some(size) = ctx.arg::<usize>(2) else { return };
+    let size = size * nmemb;
+    let _ = unsafe { REALLOCARRAYS.insert(&ctx.tgid(), &(ptr, size), 0) };
+}
+
+#[uretprobe]
+fn reallocarray_ret(ctx: RetProbeContext) {
+    let Some(new_ptr) = ctx.ret::<*const c_void>() else { return };
+    let args = unsafe { REALLOCARRAYS.get(&ctx.tgid()).copied() };
+    let Some((old_ptr, new_size)) = args else { return };
+
+    let _ = unsafe { REALLOCARRAYS.remove(&ctx.tgid()) };
+    // reallocarray is basically realloc but with size*nmemb checked for overflow. so see
+    // realloc_ret for what's following.
+    if old_ptr != null() && new_ptr != null() && new_size != 0 {
         on_free(&ctx, old_ptr);
         on_alloc(&ctx, new_ptr, new_size);
     }
