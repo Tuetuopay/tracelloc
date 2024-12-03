@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     os::{fd::AsRawFd, raw::c_void},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -58,11 +58,14 @@ struct Tracelloc {
     /// Output the collected data as a flamegraph-compatible file on exit.
     #[clap(long)]
     flamegraph: Option<String>,
+    /// Print outstanding allocations that old (seconds)
+    #[clap(long)]
+    age: Option<u64>,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let Tracelloc { pid, top, flamegraph } = Tracelloc::parse();
+    let Tracelloc { pid, top, flamegraph, age } = Tracelloc::parse();
 
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
@@ -111,7 +114,7 @@ async fn main() -> Result<()> {
     loop {
         select! {
             _ = ctrl_c() => break,
-            _ = tick_print.tick() => print_stats(&symbols, &allocs, &allocators, top)?,
+            _ = tick_print.tick() => print_stats(&symbols, &allocs, &allocators, top, age)?,
             _ = tick_gc.tick() => gc_allocators(&mut allocators),
             guard = events_fd.readable() => {
                 handle_event(&mut events, &mut stacks, &mut allocs, &mut allocators, guard?).await?;
@@ -164,6 +167,8 @@ struct Allocation {
     size: usize,
     /// Stack trace that allocated the memory.
     stack: Vec<u64>,
+    /// Timestamp of the memory allocation
+    birth: Instant,
 }
 
 async fn handle_event(
@@ -188,7 +193,7 @@ async fn handle_event(
             return Ok(());
         };
         let stack = stack.frames().iter().map(|frame| frame.ip).collect::<Vec<_>>();
-        let alloc = Allocation { size, stack };
+        let alloc = Allocation { size, stack, birth: Instant::now() };
         if let Some(old_alloc) = allocations.insert(addr, alloc.clone()) {
             // Let's assume we missed a free somewhere.
             debug!("Found old {old_alloc:016x?} for addr {addr:016x?}");
@@ -214,15 +219,35 @@ fn print_stats(
     allocations: &HashMap<*const c_void, Allocation>,
     allocators: &HashMap<Vec<u64>, usize>,
     top: usize,
+    age: Option<u64>,
 ) -> Result<()> {
     let mut allocs = allocations.iter().collect::<Vec<_>>();
     allocs.sort_by_key(|(_ptr, alloc)| alloc.size);
     let total = Size::from_bytes(allocs.iter().map(|(_ptr, alloc)| alloc.size).sum::<usize>());
     println!("==> {top} top allocations out of {} for a total of {total}", allocs.len());
-    for &(&ptr, Allocation { size, stack }) in allocs.iter().rev().take(top) {
+    for &(&ptr, Allocation { size, stack, birth }) in allocs.iter().rev().take(top) {
         let size = Size::from_bytes(*size);
-        println!("    {COLOR_BLU}0x{ptr:016x?}{COLOR_RST}: {size}");
+        println!("    {COLOR_BLU}0x{ptr:016x?}{COLOR_RST}: {size} ({:?} old)", birth.elapsed());
         symbols.print_stacktrace(stack);
+    }
+
+    if let Some(age) = age {
+        let age = Duration::from_secs(age);
+        let mut allocs = allocations
+            .iter()
+            .filter(|(_, alloc)| alloc.birth.elapsed() >= age)
+            .collect::<Vec<_>>();
+        allocs.sort_by_key(|(_ptr, alloc)| alloc.size);
+        let total = Size::from_bytes(allocs.iter().map(|(_ptr, alloc)| alloc.size).sum::<usize>());
+        println!(
+            "==> {top} top allocations older than {age:?} out of {} for a total of {total}",
+            allocs.len()
+        );
+        for &(&ptr, Allocation { size, stack, birth }) in allocs.iter().rev().take(top) {
+            let size = Size::from_bytes(*size);
+            println!("    {COLOR_BLU}0x{ptr:016x?}{COLOR_RST}: {size} ({:?} old)", birth.elapsed());
+            symbols.print_stacktrace(stack);
+        }
     }
 
     let mut allocs = allocators.iter().collect::<Vec<_>>();
