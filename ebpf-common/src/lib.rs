@@ -6,13 +6,6 @@ use core::ffi::c_void;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub struct AllocationValue {
-    pub size: usize,
-    pub stackid: u32,
-}
-
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
 #[cfg_attr(feature = "user", derive(Debug))]
 pub struct Event {
     pub addr: *const c_void,
@@ -27,13 +20,4 @@ pub struct Event {
 pub enum EventKind {
     Alloc,
     Free,
-}
-
-#[cfg(feature = "user")]
-mod pod {
-    use aya::Pod;
-
-    use crate::AllocationValue;
-
-    unsafe impl Pod for AllocationValue {}
 }

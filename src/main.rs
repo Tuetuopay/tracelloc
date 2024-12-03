@@ -179,9 +179,9 @@ async fn handle_event(
     };
     let event = unsafe { &*item.as_ptr().cast::<Event>() };
     let addr = event.addr;
-    let size = event.size;
 
     if matches!(event.kind, EventKind::Alloc) {
+        let size = event.size;
         let stackid = event.stackid;
         let Ok(stack) = stacks.get(&stackid, 0) else {
             debug!("Dropped {event:016x?}: stack not found");
@@ -203,7 +203,7 @@ async fn handle_event(
             return Ok(());
         };
         let total_size = allocators.entry(alloc.stack).or_default();
-        *total_size = total_size.saturating_sub(size);
+        *total_size = total_size.saturating_sub(alloc.size);
     }
 
     Ok(())

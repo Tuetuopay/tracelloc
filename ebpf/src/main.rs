@@ -13,7 +13,7 @@ use aya_ebpf::{
     EbpfContext,
 };
 use aya_log_ebpf::info;
-use tracelloc_ebpf_common::{AllocationValue, Event, EventKind};
+use tracelloc_ebpf_common::{Event, EventKind};
 
 macro_rules! tracking_map {
     ($name:ident, $arg:ty) => {
@@ -32,9 +32,6 @@ tracking_map!(FREES, *const c_void);
 tracking_map!(REALLOCS, (*const c_void, usize));
 tracking_map!(REALLOCARRAYS, (*const c_void, usize));
 
-#[map]
-static mut ALLOCATIONS: HashMap<*const c_void, AllocationValue> =
-    HashMap::with_max_entries(1_000_000, BPF_F_NO_PREALLOC);
 #[map]
 static mut STACKS: StackTrace = StackTrace::with_max_entries(1_000, 0);
 #[map]
@@ -149,16 +146,12 @@ fn on_alloc<C: EbpfContext>(ctx: &C, ptr: *const c_void, size: usize) {
             Err(_) => return,
         };
 
-        if ptr != null() {
-            let _ = ALLOCATIONS.insert(&ptr, &AllocationValue { size, stackid }, 0);
-        }
-
         if let Some(mut event) = EVENTS.reserve::<Event>(0) {
-            let evt = event.as_mut_ptr();
-            (*evt).addr = ptr;
-            (*evt).size = size;
-            (*evt).stackid = stackid;
-            (*evt).kind = EventKind::Alloc;
+            let evt = &mut *event.as_mut_ptr();
+            evt.addr = ptr;
+            evt.size = size;
+            evt.stackid = stackid;
+            evt.kind = EventKind::Alloc;
             event.submit(0);
         } else {
             info!(ctx, "Ring buffer is full for send!");
@@ -168,18 +161,10 @@ fn on_alloc<C: EbpfContext>(ctx: &C, ptr: *const c_void, size: usize) {
 
 fn on_free<C: EbpfContext>(ctx: &C, ptr: *const c_void) {
     unsafe {
-        let Some(&AllocationValue { size, stackid }) = ALLOCATIONS.get(&ptr) else { return };
-
-        if ptr != null() {
-            let _ = ALLOCATIONS.remove(&ptr);
-        }
-
         if let Some(mut event) = EVENTS.reserve::<Event>(0) {
-            let evt = event.as_mut_ptr();
-            (*evt).addr = ptr;
-            (*evt).size = size;
-            // (*evt).stackid = stackid;
-            (*evt).kind = EventKind::Free;
+            let evt = &mut *event.as_mut_ptr();
+            evt.addr = ptr;
+            evt.kind = EventKind::Free;
             event.submit(0);
         } else {
             info!(ctx, "Ring buffer is full for free!");
