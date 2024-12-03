@@ -99,7 +99,7 @@ checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 [[package]]
 name = "aya"
 version = "0.13.1"
-source = "git+https://github.com/aya-rs/aya.git?branch=main#5075adc01d03786ea3b168bbce6f500391b020e5"
+source = "git+https://github.com/aya-rs/aya.git?branch=main#5a43bedc0180ba41854e6c23f0476c2cbeb1e2bd"
 dependencies = [
  "assert_matches",
  "aya-obj",
@@ -116,7 +116,7 @@ dependencies = [
 [[package]]
 name = "aya-log"
 version = "0.2.1"
-source = "git+https://github.com/aya-rs/aya.git?branch=main#5075adc01d03786ea3b168bbce6f500391b020e5"
+source = "git+https://github.com/aya-rs/aya.git?branch=main#5a43bedc0180ba41854e6c23f0476c2cbeb1e2bd"
 dependencies = [
  "aya",
  "aya-log-common",
@@ -129,7 +129,7 @@ dependencies = [
 [[package]]
 name = "aya-log-common"
 version = "0.1.15"
-source = "git+https://github.com/aya-rs/aya.git?branch=main#5075adc01d03786ea3b168bbce6f500391b020e5"
+source = "git+https://github.com/aya-rs/aya.git?branch=main#5a43bedc0180ba41854e6c23f0476c2cbeb1e2bd"
 dependencies = [
  "num_enum",
 ]
@@ -137,7 +137,7 @@ dependencies = [
 [[package]]
 name = "aya-obj"
 version = "0.2.1"
-source = "git+https://github.com/aya-rs/aya.git?branch=main#5075adc01d03786ea3b168bbce6f500391b020e5"
+source = "git+https://github.com/aya-rs/aya.git?branch=main#5a43bedc0180ba41854e6c23f0476c2cbeb1e2bd"
 dependencies = [
  "bytes",
  "hashbrown",
