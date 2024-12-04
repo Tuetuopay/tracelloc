@@ -11,6 +11,9 @@ rustflags = [
     # See: https://github.com/rust-lang/rust/issues/56068
     # See: https://reviews.llvm.org/D74169#1990180
     "-C", "link-arg=-Wl,--compress-debug-sections=zlib",
+
+    # I'm not using a 386 anymore
+    "-C", "target-cpu=x86-64-v3",
 ]
 
 [target.x86_64-unknown-linux-gnu]
@@ -22,4 +25,7 @@ rustflags = [
     # See: https://github.com/rust-lang/rust/issues/56068
     # See: https://reviews.llvm.org/D74169#1990180
     "-C", "link-arg=-Wl,--compress-debug-sections=zlib",
+
+    # I'm not using a 386 anymore
+    "-C", "target-cpu=x86-64-v3",
 ]
