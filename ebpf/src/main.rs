@@ -5,14 +5,15 @@
 use core::ptr::null;
 
 use aya_ebpf::{
-    bindings::{BPF_F_NO_PREALLOC, BPF_F_REUSE_STACKID, BPF_F_USER_STACK},
+    bindings::{BPF_F_NO_PREALLOC, BPF_F_USER_STACK},
     cty::{c_void, size_t},
+    helpers::bpf_get_stack,
     macros::{map, uprobe, uretprobe},
-    maps::{HashMap, RingBuf, StackTrace},
+    maps::{HashMap, RingBuf},
     programs::{ProbeContext, RetProbeContext},
     EbpfContext,
 };
-use aya_log_ebpf::info;
+use aya_log_ebpf::warn;
 use tracelloc_ebpf_common::{Event, EventKind};
 
 macro_rules! tracking_map {
@@ -32,8 +33,6 @@ tracking_map!(FREES, *const c_void);
 tracking_map!(REALLOCS, (*const c_void, usize));
 tracking_map!(REALLOCARRAYS, (*const c_void, usize));
 
-#[map]
-static mut STACKS: StackTrace = StackTrace::with_max_entries(1_000, 0);
 #[map]
 static mut EVENTS: RingBuf = RingBuf::with_byte_size(1024 * 4096, 0);
 
@@ -140,35 +139,54 @@ fn reallocarray_ret(ctx: RetProbeContext) {
 
 fn on_alloc<C: EbpfContext>(ctx: &C, ptr: *const c_void, size: usize) {
     unsafe {
-        let stackid = STACKS.get_stackid(ctx, (BPF_F_USER_STACK | BPF_F_REUSE_STACKID) as u64);
-        let stackid = match stackid {
-            Ok(id) => id as u32,
-            Err(_) => return,
+        let Some(mut event) = EVENTS.reserve::<Event>(0) else {
+            warn!(ctx, "Ring buffer is full for alloc!");
+            return;
         };
 
-        if let Some(mut event) = EVENTS.reserve::<Event>(0) {
-            let evt = &mut *event.as_mut_ptr();
-            evt.addr = ptr;
-            evt.size = size;
-            evt.stackid = stackid;
-            evt.kind = EventKind::Alloc;
-            event.submit(0);
-        } else {
-            info!(ctx, "Ring buffer is full for send!");
+        let evt = &mut *event.as_mut_ptr();
+        evt.addr = ptr;
+        evt.size = size;
+        evt.kind = EventKind::Alloc;
+        match get_stack(ctx, &mut evt.stack) {
+            Ok(len) => {
+                evt.stack_len = len as u8;
+                event.submit(0);
+            }
+            Err(e) => {
+                warn!(
+                    ctx,
+                    "on_alloc: failed to get stack ({}). ptr={:x} size={}", e, ptr as u64, size
+                );
+                event.discard(0);
+            }
         }
     }
 }
 
 fn on_free<C: EbpfContext>(ctx: &C, ptr: *const c_void) {
     unsafe {
-        if let Some(mut event) = EVENTS.reserve::<Event>(0) {
-            let evt = &mut *event.as_mut_ptr();
-            evt.addr = ptr;
-            evt.kind = EventKind::Free;
-            event.submit(0);
-        } else {
-            info!(ctx, "Ring buffer is full for free!");
-        }
+        let Some(mut event) = EVENTS.reserve::<Event>(0) else {
+            warn!(ctx, "Ring buffer is full for free!");
+            return;
+        };
+
+        let evt = &mut *event.as_mut_ptr();
+        evt.addr = ptr;
+        evt.kind = EventKind::Free;
+        event.submit(0);
+    }
+}
+
+/// Wrapper around bpf_get_stack.
+///
+/// Returns how many frames were captured.
+fn get_stack<C: EbpfContext>(ctx: &C, buf: &mut [u64]) -> Result<u64, i64> {
+    let len = buf.len() as u32 * 8;
+    let buf = buf.as_mut_ptr().cast();
+    match unsafe { bpf_get_stack(ctx.as_ptr(), buf, len, BPF_F_USER_STACK as _) } {
+        len @ 0.. => Ok(len as u64 / 8),
+        e => Err(e),
     }
 }
 

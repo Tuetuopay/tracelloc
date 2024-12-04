@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{Map, MapData, MapError, RingBuf, StackTraceMap},
+    maps::{Map, MapData, MapError, RingBuf},
     programs::UProbe,
     Ebpf, EbpfLoader,
 };
@@ -26,7 +26,7 @@ use tokio::{
     time::interval,
 };
 use tracelloc_ebpf_common::{Event, EventKind, Memcall};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 mod elf;
@@ -53,21 +53,33 @@ struct Tracelloc {
     #[clap(long, short)]
     pid: i32,
     /// Top N things to show.
-    #[clap(long, default_value = "15")]
+    #[clap(long, default_value = "2")]
     top: usize,
-    /// Output the collected data as a flamegraph-compatible file on exit.
+    /// Output the collected data as a flamegraph-compatible file on exit or on SIGUSR1.
     #[clap(long)]
     flamegraph: Option<String>,
     /// Print outstanding allocations that old (seconds)
     #[clap(long)]
     age: Option<u64>,
+    /// Set the size, in bytes, of the events ring buffer. Will be rounded down to the nearest
+    /// power-of-two multiple of the page size. Defaults to 2048 * 4096.
+    #[clap(long, default_value = "8388608")]
+    events_size: usize,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let Tracelloc { pid, top, flamegraph, age } = Tracelloc::parse();
+    let Tracelloc { pid, top, flamegraph, age, events_size } = Tracelloc::parse();
 
     tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env()).init();
+
+    let page_size = page_size::get();
+    let pow = 63 - (events_size / page_size).leading_zeros();
+    let events_size = (((events_size / page_size) >> pow) << pow) * page_size;
+    info!(
+        "Using an events ringbuf size of {events_size} bytes ({})",
+        Size::from_bytes(events_size)
+    );
 
     let symbol_filter = &[
         " as core::future::future::Future>::poll",
@@ -90,7 +102,10 @@ async fn main() -> Result<()> {
     let symbols = SymResolver::new(pid)?.with_symbol_filter(symbol_filter);
 
     info!("Loading eBPF");
-    let mut ebpf = EbpfLoader::new().load(&TRACELLOC).context("Failed to load eBPF program")?;
+    let mut ebpf = EbpfLoader::new()
+        .set_max_entries("EVENTS", events_size as u32)
+        .load(&TRACELLOC)
+        .context("Failed to load eBPF program")?;
     EbpfLogger::init(&mut ebpf).context("aya-log")?;
 
     instrument(&mut ebpf, pid, "libc", "malloc")?;
@@ -99,7 +114,6 @@ async fn main() -> Result<()> {
     instrument(&mut ebpf, pid, "libc", "realloc")?;
     instrument(&mut ebpf, pid, "libc", "reallocarray")?;
 
-    let mut stacks = take_map::<StackTraceMap<MapData>>(&mut ebpf, "STACKS")?;
     let mut events = take_map::<RingBuf<MapData>>(&mut ebpf, "EVENTS")?;
     let events_fd = AsyncFd::new(events.as_raw_fd()).context("fd")?;
 
@@ -117,7 +131,7 @@ async fn main() -> Result<()> {
             _ = tick_print.tick() => print_stats(&symbols, &allocs, &allocators, top, age)?,
             _ = tick_gc.tick() => gc_allocators(&mut allocators),
             guard = events_fd.readable() => {
-                handle_event(&mut events, &mut stacks, &mut allocs, &mut allocators, guard?).await?;
+                handle_events(&mut events, &mut allocs, &mut allocators, guard?)?;
             }
             _ = sigusr1.recv(), if flamegraph.is_some() => {
                 output_flamegraph(&symbols, &allocators, flamegraph.as_deref().unwrap())?;
@@ -171,28 +185,29 @@ struct Allocation {
     birth: Instant,
 }
 
-async fn handle_event(
+fn handle_events(
     events: &mut RingBuf<MapData>,
-    stacks: &mut StackTraceMap<MapData>,
     allocations: &mut HashMap<*const c_void, Allocation>,
     allocators: &mut HashMap<Vec<u64>, usize>,
     mut guard: AsyncFdReadyGuard<'_, i32>,
 ) -> Result<()> {
-    let Some(item) = events.next() else {
-        guard.clear_ready();
-        return Ok(());
-    };
-    let event = unsafe { &*item.as_ptr().cast::<Event>() };
-    let addr = event.addr;
+    while let Some(event) = events.next() {
+        let event = unsafe { &*event.as_ptr().cast::<Event>() };
+        handle_event(allocations, allocators, event)?;
+    }
+    guard.clear_ready();
+    Ok(())
+}
 
+fn handle_event(
+    allocations: &mut HashMap<*const c_void, Allocation>,
+    allocators: &mut HashMap<Vec<u64>, usize>,
+    event: &Event,
+) -> Result<()> {
+    let addr = event.addr;
     if matches!(event.kind, EventKind::Alloc) {
         let size = event.size;
-        let stackid = event.stackid;
-        let Ok(stack) = stacks.get(&stackid, 0) else {
-            debug!("Dropped {event:016x?}: stack not found");
-            return Ok(());
-        };
-        let stack = stack.frames().iter().map(|frame| frame.ip).collect::<Vec<_>>();
+        let stack = event.stack[..event.stack_len as usize].to_vec();
         let alloc = Allocation { size, stack, birth: Instant::now() };
         if let Some(old_alloc) = allocations.insert(addr, alloc.clone()) {
             // Let's assume we missed a free somewhere.

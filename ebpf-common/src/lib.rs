@@ -4,13 +4,17 @@
 
 use core::ffi::c_void;
 
-#[repr(C, packed)]
+// Default value of kernel.perf_event_max_stack
+pub const MAX_STACK_DEPTH: u8 = 127;
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 #[cfg_attr(feature = "user", derive(Debug))]
 pub struct Event {
     pub addr: *const c_void,
     pub size: usize,
-    pub stackid: u32,
+    pub stack: [u64; MAX_STACK_DEPTH as usize],
+    pub stack_len: u8,
     pub kind: EventKind,
 }
 
